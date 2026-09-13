@@ -1,0 +1,106 @@
+name: build
+
+# runs every day, on demand, and on every push to the test-build branch.
+# a push to test-build only builds and keeps the output as a workflow
+# artifact, it never publishes. the daily run and a manual run publish a
+# release only when the package content changed since the last release.
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "publish a release when the data changed"
+        type: boolean
+        default: true
+  push:
+    branches:
+      - test-build
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+env:
+  # keep in sync with the phishingclub build, golang:1.25.10-alpine linux/amd64
+  GO_IMAGE: golang@sha256:c4ea15b4a7912716eb362a022e2b12317762eca387423760bc59c0f9ae69423c
+  KEEP_RELEASES: 30
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Fetch the previous manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p prev
+          gh release download --pattern manifest.json --dir prev || echo "no previous release"
+
+      - name: Set version
+        id: version
+        run: echo "version=$(date -u +%Y.%m.%d-%H%M)" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src -e GOFLAGS=-buildvcs=false "$GO_IMAGE" \
+            go test ./...
+
+      - name: Build packages
+        id: build
+        run: |
+          PREV=""
+          if [ -f prev/manifest.json ]; then PREV="-previous prev/manifest.json"; fi
+          docker run --rm -v "$PWD:/src" -w /src -e GOFLAGS=-buildvcs=false "$GO_IMAGE" \
+            go run . -out dist -version "${{ steps.version.outputs.version }}" $PREV
+          sudo chown -R "$(id -u):$(id -g)" dist
+          echo "changed=$(tr -d '[:space:]' < dist/changed)" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: |
+          cat dist/summary.md >> "$GITHUB_STEP_SUMMARY"
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat dist/manifest.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the build output for test runs
+        if: github.event_name == 'push' || inputs.publish == false
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ipdata-${{ steps.version.outputs.version }}
+          path: dist/
+          retention-days: 7
+
+      - name: Publish release
+        if: >-
+          steps.build.outputs.changed == 'true' &&
+          github.event_name != 'push' &&
+          (github.event_name == 'schedule' || inputs.publish == true)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" \
+            dist/manifest.json dist/geoip.tar.gz dist/asn.tar.gz \
+            --title "$VERSION" --notes-file dist/summary.md
+
+      - name: Remove old releases
+        if: >-
+          steps.build.outputs.changed == 'true' &&
+          github.event_name != 'push' &&
+          (github.event_name == 'schedule' || inputs.publish == true)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --limit 200 --exclude-drafts --json tagName \
+            --jq ".[$KEEP_RELEASES:][].tagName" | while read -r tag; do
+            echo "removing $tag"
+            gh release delete "$tag" --cleanup-tag --yes
+          done

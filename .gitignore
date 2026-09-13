@@ -1,0 +1,4 @@
+dist/
+prev/
+downloads/
+*.tar.gz
