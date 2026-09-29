@@ -2,96 +2,98 @@ package format
 
 import (
 	"encoding/json"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-func TestRoundTrip(t *testing.T) {
-	v4 := []Record4{
-		{Addr: [4]byte{8, 8, 8, 0}, PrefixLen: 24, Value: 1},
-		{Addr: [4]byte{10, 0, 0, 0}, PrefixLen: 8, Value: 0},
-	}
-	v6 := []Record6{
-		{Addr: netip.MustParseAddr("2a01:4f8::").As16(), PrefixLen: 32, Value: 1},
-	}
-	got4, err := DecodeIPv4(EncodeIPv4(v4))
+func writePackage(t *testing.T, dir string, info Info, entries []byte) {
+	t.Helper()
+	infoBytes, err := json.Marshal(info)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got6, err := DecodeIPv6(EncodeIPv6(v6))
-	if err != nil {
+	if err := os.WriteFile(filepath.Join(dir, FilePackage), infoBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if len(got4) != 2 || got4[0] != v4[0] || got4[1] != v4[1] {
-		t.Fatalf("ipv4 mismatch: %+v", got4)
-	}
-	if len(got6) != 1 || got6[0] != v6[0] {
-		t.Fatalf("ipv6 mismatch: %+v", got6)
-	}
-	if got4[0].Prefix().String() != "8.8.8.0/24" {
-		t.Fatalf("prefix: %s", got4[0].Prefix())
-	}
-	if got6[0].Prefix().String() != "2a01:4f8::/32" {
-		t.Fatalf("prefix: %s", got6[0].Prefix())
+	if err := os.WriteFile(filepath.Join(dir, FileEntries), entries, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestDecodeRejectsBadInput(t *testing.T) {
-	if _, err := DecodeIPv4([]byte{1, 2, 3}); err == nil {
-		t.Fatal("expected length error")
-	}
-	if _, err := DecodeIPv4([]byte{1, 2, 3, 4, 33, 0, 0, 0, 0}); err == nil {
-		t.Fatal("expected prefix length error")
-	}
-	if _, err := DecodeIPv6(make([]byte, RecordSize6+1)); err == nil {
-		t.Fatal("expected length error")
-	}
-}
-
-func TestLoadDir(t *testing.T) {
+func TestLoadDirGeoIP(t *testing.T) {
 	dir := t.TempDir()
-	v4 := EncodeIPv4([]Record4{{Addr: [4]byte{1, 2, 3, 0}, PrefixLen: 24, Value: 0}})
-	v6 := EncodeIPv6(nil)
-	values, _ := json.Marshal([]GeoIPValue{{Code: "DK", Name: "Denmark"}})
+	entries := []byte(`[{"code":"DK","name":"Denmark","ipv4":["2.104.0.0/13"],"ipv6":["2a01:4f8::/32","2a02::/16"]}]`)
 	info := Info{
-		Format:      Version,
-		Name:        PackageGeoIP,
-		IPv4Records: 1,
-		IPv6Records: 0,
-		Values:      1,
-		ContentHash: ContentHash(v4, v6, values),
+		Format:       Version,
+		Name:         PackageGeoIP,
+		Entries:      1,
+		IPv4Prefixes: 1,
+		IPv6Prefixes: 2,
+		ContentHash:  ContentHash(entries),
 	}
-	infoBytes, _ := json.Marshal(info)
-	for name, data := range map[string][]byte{
-		FilePackage: infoBytes, FileIPv4: v4, FileIPv6: v6, FileValues: values,
-	} {
-		if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	writePackage(t, dir, info, entries)
 	pkg, err := LoadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pkg.IPv4) != 1 || pkg.Info.Name != PackageGeoIP {
-		t.Fatalf("unexpected package: %+v", pkg.Info)
+	got, err := pkg.GeoIP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Code != "DK" || got[0].IPv6[1] != "2a02::/16" {
+		t.Fatalf("entries: %+v", got)
+	}
+	if _, err := pkg.ASN(); err == nil {
+		t.Fatal("expected wrong package name error")
 	}
 
-	// a value index outside values.json must be rejected
-	bad := EncodeIPv4([]Record4{{Addr: [4]byte{1, 2, 3, 0}, PrefixLen: 24, Value: 5}})
-	info.ContentHash = ContentHash(bad, v6, values)
-	infoBytes, _ = json.Marshal(info)
-	os.WriteFile(filepath.Join(dir, FileIPv4), bad, 0o644)
-	os.WriteFile(filepath.Join(dir, FilePackage), infoBytes, 0o644)
-	if _, err := LoadDir(dir); err == nil {
-		t.Fatal("expected out of range value error")
+	// counts in package.json must match the entries
+	info.IPv4Prefixes = 2
+	writePackage(t, dir, info, entries)
+	pkg, err = LoadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pkg.GeoIP(); err == nil {
+		t.Fatal("expected count mismatch error")
 	}
 
-	// a changed data file must fail the content hash check
-	os.WriteFile(filepath.Join(dir, FileIPv4), v4, 0o644)
+	// a changed entries file must fail the content hash check
+	info.IPv4Prefixes = 1
+	writePackage(t, dir, info, append(entries, '\n'))
 	if _, err := LoadDir(dir); err == nil {
 		t.Fatal("expected content hash error")
+	}
+
+	// an unknown format version is refused
+	info.Format = Version + 1
+	writePackage(t, dir, info, entries)
+	if _, err := LoadDir(dir); err == nil {
+		t.Fatal("expected format version error")
+	}
+}
+
+func TestLoadDirASN(t *testing.T) {
+	dir := t.TempDir()
+	entries := []byte(`[{"asn":15169,"handle":"GOOGLE","name":"Google LLC","country":"US","ipv4":["8.8.8.0/24"],"ipv6":[]}]`)
+	info := Info{
+		Format:       Version,
+		Name:         PackageASN,
+		Entries:      1,
+		IPv4Prefixes: 1,
+		ContentHash:  ContentHash(entries),
+	}
+	writePackage(t, dir, info, entries)
+	pkg, err := LoadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := pkg.ASN()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ASN != 15169 || got[0].Name != "Google LLC" {
+		t.Fatalf("entries: %+v", got)
 	}
 }

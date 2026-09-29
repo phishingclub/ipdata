@@ -27,10 +27,8 @@ func writePackage(out string, info format.Info, b *built) (format.ManifestPackag
 		return format.ManifestPackage{}, err
 	}
 	files := []tarFile{
-		{format.FilePackage, infoBytes},
-		{format.FileIPv4, b.ipv4},
-		{format.FileIPv6, b.ipv6},
-		{format.FileValues, b.values},
+		{format.FilePackage, append(infoBytes, '\n')},
+		{format.FileEntries, b.entries},
 	}
 
 	fileName := info.Name + ".tar.gz"
@@ -39,7 +37,6 @@ func writePackage(out string, info format.Info, b *built) (format.ManifestPackag
 	if err != nil {
 		return format.ManifestPackage{}, err
 	}
-	hash := sha256.New()
 	gz, err := gzip.NewWriterLevel(f, gzip.BestCompression)
 	if err != nil {
 		f.Close()
@@ -80,15 +77,15 @@ func writePackage(out string, info format.Info, b *built) (format.ManifestPackag
 	if err != nil {
 		return format.ManifestPackage{}, err
 	}
-	hash.Write(data)
+	sum := sha256.Sum256(data)
 	return format.ManifestPackage{
-		File:        fileName,
-		Size:        int64(len(data)),
-		SHA256:      hex.EncodeToString(hash.Sum(nil)),
-		ContentHash: info.ContentHash,
-		IPv4Records: info.IPv4Records,
-		IPv6Records: info.IPv6Records,
-		Values:      info.Values,
+		File:         fileName,
+		Size:         int64(len(data)),
+		SHA256:       hex.EncodeToString(sum[:]),
+		ContentHash:  info.ContentHash,
+		Entries:      info.Entries,
+		IPv4Prefixes: info.IPv4Prefixes,
+		IPv6Prefixes: info.IPv6Prefixes,
 	}, nil
 }
 

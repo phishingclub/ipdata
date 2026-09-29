@@ -41,7 +41,7 @@ func main() {
 	asnFile := flag.String("asn-file", "", "use this local autonomous system archive instead of downloading")
 	previous := flag.String("previous", "", "manifest.json of the previous release, enables drift checks and change detection")
 	version := flag.String("version", time.Now().UTC().Format("2006.01.02-1504"), "version written to the manifest")
-	maxDrift := flag.Float64("max-drift", 0.25, "largest allowed change in record counts against the previous release")
+	maxDrift := flag.Float64("max-drift", 0.25, "largest allowed change in counts against the previous release")
 	downloads := flag.String("downloads", "", "keep downloaded archives in this directory instead of a temp dir")
 	flag.Parse()
 
@@ -130,16 +130,16 @@ func run(out, version, previous, downloads string, maxDrift float64, sources []s
 		}
 
 		info := format.Info{
-			Format:      format.Version,
-			Name:        s.name,
-			Version:     version,
-			Created:     created,
-			Source:      s.url,
-			License:     upstreamLicense,
-			IPv4Records: b.count4,
-			IPv6Records: b.count6,
-			Values:      b.nvals,
-			ContentHash: format.ContentHash(b.ipv4, b.ipv6, b.values),
+			Format:       format.Version,
+			Name:         s.name,
+			Version:      version,
+			Created:      created,
+			Source:       s.url,
+			License:      upstreamLicense,
+			Entries:      b.nvals,
+			IPv4Prefixes: b.count4,
+			IPv6Prefixes: b.count6,
+			ContentHash:  format.ContentHash(b.entries),
 		}
 		entry, err := writePackage(out, info, b)
 		if err != nil {

@@ -3,7 +3,10 @@ name: build
 # runs every day, on demand, and on every push to the test-build branch.
 # a push to test-build only builds and keeps the output as a workflow
 # artifact, it never publishes. the daily run and a manual run publish a
-# release only when the package content changed since the last release.
+# release only when the package content changed since the last release,
+# and then commit the new manifest to the branch. that commit is what keeps
+# the schedule alive, github disables cron in a repository with no pushes
+# for 60 days.
 on:
   schedule:
     - cron: "17 4 * * *"
@@ -25,8 +28,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # keep in sync with the phishingclub build, golang:1.25.10-alpine linux/amd64
-  GO_IMAGE: golang@sha256:c4ea15b4a7912716eb362a022e2b12317762eca387423760bc59c0f9ae69423c
   KEEP_RELEASES: 30
 
 jobs:
@@ -35,6 +36,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # keep in sync with the phishingclub build
+          go-version: "1.25.10"
+          check-latest: false
+          cache: false
 
       - name: Fetch the previous manifest
         env:
@@ -48,18 +56,14 @@ jobs:
         run: echo "version=$(date -u +%Y.%m.%d-%H%M)" >> "$GITHUB_OUTPUT"
 
       - name: Test
-        run: |
-          docker run --rm -v "$PWD:/src" -w /src -e GOFLAGS=-buildvcs=false "$GO_IMAGE" \
-            go test ./...
+        run: go vet ./... && go test ./...
 
       - name: Build packages
         id: build
         run: |
           PREV=""
           if [ -f prev/manifest.json ]; then PREV="-previous prev/manifest.json"; fi
-          docker run --rm -v "$PWD:/src" -w /src -e GOFLAGS=-buildvcs=false "$GO_IMAGE" \
-            go run . -out dist -version "${{ steps.version.outputs.version }}" $PREV
-          sudo chown -R "$(id -u):$(id -g)" dist
+          go run . -out dist -version "${{ steps.version.outputs.version }}" $PREV
           echo "changed=$(tr -d '[:space:]' < dist/changed)" >> "$GITHUB_OUTPUT"
 
       - name: Summary
@@ -90,6 +94,22 @@ jobs:
           gh release create "v$VERSION" \
             dist/manifest.json dist/geoip.tar.gz dist/asn.tar.gz \
             --title "$VERSION" --notes-file dist/summary.md
+
+      - name: Commit the manifest of the published release
+        if: >-
+          steps.build.outputs.changed == 'true' &&
+          github.event_name != 'push' &&
+          (github.event_name == 'schedule' || inputs.publish == true)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p latest
+          cp dist/manifest.json latest/manifest.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add latest/manifest.json
+          git commit -m "release $VERSION"
+          git push
 
       - name: Remove old releases
         if: >-

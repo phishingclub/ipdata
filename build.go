@@ -18,14 +18,16 @@ import (
 
 // entry is one country or one autonomous system with its prefixes
 type entry struct {
-	code  string
-	asn   uint32
-	value any
-	v4    []netip.Prefix
-	v6    []netip.Prefix
+	code    string
+	asn     uint32
+	name    string
+	handle  string
+	country string
+	v4      []netip.Prefix
+	v6      []netip.Prefix
 }
 
-// dataset is a parsed upstream tarball before it is turned into records
+// dataset is a parsed upstream tarball before it is turned into a package
 type dataset struct {
 	name       string
 	source     string
@@ -34,14 +36,12 @@ type dataset struct {
 	normalized int
 }
 
-// built is a dataset turned into the file contents of a package
+// built is a dataset turned into the content of entries.json
 type built struct {
-	ipv4   []byte
-	ipv6   []byte
-	values []byte
-	count4 int
-	count6 int
-	nvals  int
+	entries []byte
+	count4  int
+	count6  int
+	nvals   int
 }
 
 var (
@@ -86,10 +86,7 @@ func parseCountries(r io.Reader, source string) (*dataset, error) {
 		if len(c.CountryCode) != 2 {
 			return fmt.Errorf("%s: country code %q", path, c.CountryCode)
 		}
-		e := entry{
-			code:  c.CountryCode,
-			value: format.GeoIPValue{Code: c.CountryCode, Name: c.Country},
-		}
+		e := entry{code: c.CountryCode, name: c.Country}
 		ds.addPrefixes(&e, c.Prefixes.IPv4, c.Prefixes.IPv6)
 		ds.entries = append(ds.entries, e)
 		return nil
@@ -117,13 +114,10 @@ func parseASNs(r io.Reader, source string) (*dataset, error) {
 			return fmt.Errorf("%s: asn %d does not match the path", path, a.ASN)
 		}
 		e := entry{
-			asn: a.ASN,
-			value: format.ASNValue{
-				ASN:     a.ASN,
-				Handle:  a.Metadata.Handle,
-				Name:    a.Metadata.Description,
-				Country: a.Metadata.CountryCode,
-			},
+			asn:     a.ASN,
+			handle:  a.Metadata.Handle,
+			name:    a.Metadata.Description,
+			country: a.Metadata.CountryCode,
 		}
 		ds.addPrefixes(&e, a.Prefixes.IPv4, a.Prefixes.IPv6)
 		ds.entries = append(ds.entries, e)
@@ -173,7 +167,8 @@ func isReserved(a netip.Addr) bool {
 		a.IsMulticast()
 }
 
-// build sorts the entries, assigns each a value index and encodes the records
+// build sorts the entries and their prefixes and writes entries.json with one
+// entry per line
 func (ds *dataset) build() (*built, error) {
 	if len(ds.entries) == 0 {
 		return nil, errors.New("no entries found in the upstream archive")
@@ -192,59 +187,50 @@ func (ds *dataset) build() (*built, error) {
 		}
 	}
 
-	values := make([]any, 0, len(ds.entries))
-	var r4 []format.Record4
-	var r6 []format.Record6
+	var out bytes.Buffer
+	out.WriteString("[\n")
+	b := &built{nvals: len(ds.entries)}
 	for i, e := range ds.entries {
-		values = append(values, e.value)
-		for _, p := range e.v4 {
-			r4 = append(r4, format.Record4{
-				Addr:      p.Addr().As4(),
-				PrefixLen: uint8(p.Bits()),
-				Value:     uint32(i),
-			})
+		v4 := sortedStrings(e.v4)
+		v6 := sortedStrings(e.v6)
+		b.count4 += len(v4)
+		b.count6 += len(v6)
+		var v any
+		if ds.name == format.PackageGeoIP {
+			v = format.GeoIPEntry{Code: e.code, Name: e.name, IPv4: v4, IPv6: v6}
+		} else {
+			v = format.ASNEntry{ASN: e.asn, Handle: e.handle, Name: e.name, Country: e.country, IPv4: v4, IPv6: v6}
 		}
-		for _, p := range e.v6 {
-			r6 = append(r6, format.Record6{
-				Addr:      p.Addr().As16(),
-				PrefixLen: uint8(p.Bits()),
-				Value:     uint32(i),
-			})
+		line, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
 		}
+		out.Write(line)
+		if i < len(ds.entries)-1 {
+			out.WriteByte(',')
+		}
+		out.WriteByte('\n')
 	}
-	sort.Slice(r4, func(i, j int) bool {
-		a, b := r4[i], r4[j]
-		if c := bytes.Compare(a.Addr[:], b.Addr[:]); c != 0 {
-			return c < 0
-		}
-		if a.PrefixLen != b.PrefixLen {
-			return a.PrefixLen < b.PrefixLen
-		}
-		return a.Value < b.Value
-	})
-	sort.Slice(r6, func(i, j int) bool {
-		a, b := r6[i], r6[j]
-		if c := bytes.Compare(a.Addr[:], b.Addr[:]); c != 0 {
-			return c < 0
-		}
-		if a.PrefixLen != b.PrefixLen {
-			return a.PrefixLen < b.PrefixLen
-		}
-		return a.Value < b.Value
-	})
+	out.WriteString("]\n")
+	b.entries = out.Bytes()
+	return b, nil
+}
 
-	valueBytes, err := json.Marshal(values)
-	if err != nil {
-		return nil, err
+// sortedStrings orders prefixes by address then prefix length and returns
+// them as strings, never nil so the JSON holds an empty array
+func sortedStrings(prefixes []netip.Prefix) []string {
+	sort.Slice(prefixes, func(i, j int) bool {
+		a, b := prefixes[i], prefixes[j]
+		if c := a.Addr().Compare(b.Addr()); c != 0 {
+			return c < 0
+		}
+		return a.Bits() < b.Bits()
+	})
+	out := make([]string, 0, len(prefixes))
+	for _, p := range prefixes {
+		out = append(out, p.String())
 	}
-	return &built{
-		ipv4:   format.EncodeIPv4(r4),
-		ipv6:   format.EncodeIPv6(r6),
-		values: valueBytes,
-		count4: len(r4),
-		count6: len(r6),
-		nvals:  len(values),
-	}, nil
+	return out
 }
 
 // walkTar calls fn for every regular file in a gzip compressed tar stream

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/phishingclub/ipdata/format"
@@ -34,7 +35,7 @@ func makeTar(t *testing.T, files map[string]string) []byte {
 
 func TestParseCountries(t *testing.T) {
 	archive := makeTar(t, map[string]string{
-		"country/dk/aggregated.json":     `{"country":"Denmark","countryCode":"DK","prefixes":{"ipv4":["2.104.0.0/13","10.0.0.0/8","5.33.0.1/16"],"ipv6":["2a01:4f8::/32"]}}`,
+		"country/dk/aggregated.json":     `{"country":"Denmark","countryCode":"DK","prefixes":{"ipv4":["5.33.0.1/16","2.104.0.0/13","10.0.0.0/8"],"ipv6":["2a01:4f8::/32"]}}`,
 		"country/ad/aggregated.json":     `{"country":"Andorra","countryCode":"AD","prefixes":{"ipv4":["85.94.160.0/19"],"ipv6":[]}}`,
 		"country/dk/ipv4-aggregated.txt": "ignored",
 		"README.md":                      "ignored",
@@ -56,27 +57,26 @@ func TestParseCountries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r4, err := format.DecodeIPv4(b.ipv4)
-	if err != nil {
+	if b.count4 != 3 || b.count6 != 1 || b.nvals != 2 {
+		t.Fatalf("counts: %+v", b)
+	}
+	var entries []format.GeoIPEntry
+	if err := json.Unmarshal(b.entries, &entries); err != nil {
 		t.Fatal(err)
 	}
-	// AD sorts before DK so AD is value 0 and its 85.x prefix sorts last
-	want := []string{"2.104.0.0/13", "5.33.0.0/16", "85.94.160.0/19"}
-	wantValue := []uint32{1, 1, 0}
-	if len(r4) != len(want) {
-		t.Fatalf("ipv4 records: %d", len(r4))
+	// entries sort by code, prefixes by address, and empty lists stay arrays
+	if entries[0].Code != "AD" || entries[1].Code != "DK" || entries[1].Name != "Denmark" {
+		t.Fatalf("entries: %+v", entries)
 	}
-	for i, r := range r4 {
-		if r.Prefix().String() != want[i] || r.Value != wantValue[i] {
-			t.Fatalf("record %d: %s value %d", i, r.Prefix(), r.Value)
-		}
+	if strings.Join(entries[1].IPv4, " ") != "2.104.0.0/13 5.33.0.0/16" {
+		t.Fatalf("dk ipv4: %v", entries[1].IPv4)
 	}
-	var values []format.GeoIPValue
-	if err := json.Unmarshal(b.values, &values); err != nil {
-		t.Fatal(err)
+	if !strings.Contains(string(b.entries), `"ipv6":[]`) {
+		t.Fatal("empty prefix list should be an empty array")
 	}
-	if values[0].Code != "AD" || values[1].Code != "DK" || values[1].Name != "Denmark" {
-		t.Fatalf("values: %+v", values)
+	// one entry per line so the file can be grepped
+	if lines := strings.Count(string(b.entries), "\n"); lines != 4 {
+		t.Fatalf("expected 4 lines, got %d:\n%s", lines, b.entries)
 	}
 }
 
@@ -93,20 +93,19 @@ func TestParseASNs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r4, err := format.DecodeIPv4(b.ipv4)
-	if err != nil {
+	var entries []format.ASNEntry
+	if err := json.Unmarshal(b.entries, &entries); err != nil {
 		t.Fatal(err)
 	}
-	// the same prefix is kept once per announcing system, ordered by value
-	if len(r4) != 2 || r4[0].Value != 0 || r4[1].Value != 1 {
-		t.Fatalf("records: %+v", r4)
+	// sorted by asn, and a prefix announced by two systems stays in both
+	if entries[0].ASN != 3 || entries[1].ASN != 15169 || entries[1].Name != "Google LLC" {
+		t.Fatalf("entries: %+v", entries)
 	}
-	var values []format.ASNValue
-	if err := json.Unmarshal(b.values, &values); err != nil {
-		t.Fatal(err)
+	if entries[0].IPv4[0] != "8.8.8.0/24" || entries[1].IPv4[0] != "8.8.8.0/24" {
+		t.Fatalf("entries: %+v", entries)
 	}
-	if values[0].ASN != 3 || values[1].ASN != 15169 || values[1].Name != "Google LLC" {
-		t.Fatalf("values: %+v", values)
+	if b.count4 != 2 {
+		t.Fatalf("count4: %d", b.count4)
 	}
 }
 
@@ -128,7 +127,7 @@ func TestCheckFloorsAndDrift(t *testing.T) {
 	if err := check(format.PackageGeoIP, &dataset{}, big, nil, 0.25); err != nil {
 		t.Fatal(err)
 	}
-	prev := &format.ManifestPackage{IPv4Records: 100_000, IPv6Records: 70_000, Values: 240}
+	prev := &format.ManifestPackage{IPv4Prefixes: 100_000, IPv6Prefixes: 70_000, Entries: 240}
 	if err := check(format.PackageGeoIP, &dataset{}, big, prev, 0.25); err == nil {
 		t.Fatal("expected drift error")
 	}
@@ -152,8 +151,8 @@ func TestWritePackageLoadsBack(t *testing.T) {
 	out := t.TempDir()
 	info := format.Info{
 		Format: format.Version, Name: format.PackageGeoIP, Version: "test",
-		IPv4Records: b.count4, IPv6Records: b.count6, Values: b.nvals,
-		ContentHash: format.ContentHash(b.ipv4, b.ipv6, b.values),
+		Entries: b.nvals, IPv4Prefixes: b.count4, IPv6Prefixes: b.count6,
+		ContentHash: format.ContentHash(b.entries),
 	}
 	entry, err := writePackage(out, info, b)
 	if err != nil {
@@ -189,7 +188,11 @@ func TestWritePackageLoadsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pkg.IPv4) != 1 || len(pkg.IPv6) != 1 || pkg.Info.Name != format.PackageGeoIP {
-		t.Fatalf("loaded: %+v", pkg.Info)
+	entries, err := pkg.GeoIP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Code != "DK" || len(entries[0].IPv6) != 1 {
+		t.Fatalf("loaded: %+v", entries)
 	}
 }

@@ -32,7 +32,13 @@ https://github.com/phishingclub/ipdata/releases/latest/download/asn.tar.gz
 ```
 
 Releases are tagged `v<YYYY.MM.DD-HHMM>` in UTC. The workflow keeps the newest
-30 releases and deletes older ones.
+30 releases and deletes older ones. After publishing it commits the manifest
+to `latest/manifest.json` on the branch. That commit is what keeps the daily
+schedule running, GitHub disables cron in a repository with no pushes for 60
+days.
+
+The repository must be public. The download URLs above require authentication
+on a private repository, so instances could not fetch anything.
 
 A push to the `test-build` branch runs the whole build and keeps the output as
 a workflow artifact without publishing. A manual run from the Actions tab can
@@ -40,7 +46,8 @@ also be told not to publish.
 
 ## Package layout
 
-Each package is a tar.gz with four files at the top level.
+Each package is a tar.gz with two JSON files at the top level, so anyone can
+open it and read it with `jq`, `grep` or a text editor.
 
 `package.json`
 
@@ -52,62 +59,67 @@ Each package is a tar.gz with four files at the top level.
   "created": "2026-09-13T04:17:31Z",
   "source": "https://github.com/ipverse/country-ip-blocks/releases/download/latest/country-ip-blocks.tar.gz",
   "license": "CC0-1.0",
-  "ipv4_records": 178280,
-  "ipv6_records": 69303,
-  "values": 238,
-  "content_hash": "sha256 of ipv4.bin, ipv6.bin and values.json concatenated"
+  "entries": 238,
+  "ipv4_prefixes": 178280,
+  "ipv6_prefixes": 69303,
+  "content_hash": "sha256 of entries.json"
 }
 ```
 
-`ipv4.bin` holds fixed width records of 9 bytes, `ipv6.bin` of 21 bytes. All
-integers are big endian.
-
-| Field | IPv4 | IPv6 |
-|---|---|---|
-| address | 4 bytes | 16 bytes |
-| prefix length | 1 byte | 1 byte |
-| value | 4 bytes | 4 bytes |
-
-`value` is an index into the array in `values.json`. Records are sorted by
-address, then prefix length, then value. The same prefix can appear more than
-once with different values when several autonomous systems announce it, so a
-lookup should collect every record matching the longest prefix. Reserved and
-private ranges are removed at build time, and a prefix with host bits set is
-masked.
-
-`values.json` for `geoip`, sorted by code:
+`entries.json` is a JSON array with one entry per line. For `geoip` the
+entries are countries sorted by code:
 
 ```json
-[{"code":"AD","name":"Andorra"}, {"code":"AE","name":"United Arab Emirates"}]
+[
+{"code":"AD","name":"Andorra","ipv4":["45.134.104.0/22","46.172.224.0/19"],"ipv6":["2a02:6d40::/32"]},
+{"code":"AE","name":"United Arab Emirates","ipv4":["2.48.0.0/13"],"ipv6":["2001:8f8::/32"]}
+]
 ```
 
-`values.json` for `asn`, sorted by number:
+For `asn` the entries are autonomous systems sorted by number:
 
 ```json
-[{"asn":3,"handle":"AS3","name":"Adaptive Systems A/S","country":"US"}]
+[
+{"asn":3,"handle":"AS3","name":"Adaptive Systems A/S","country":"US","ipv4":["18.2.0.0/16"],"ipv6":[]},
+{"asn":15169,"handle":"GOOGLE","name":"Google LLC","country":"US","ipv4":["8.8.8.0/24"],"ipv6":["2001:4860::/32"]}
+]
 ```
+
+Prefixes inside an entry are sorted by address. The same prefix can appear in
+more than one ASN entry when several systems announce it, so a lookup should
+collect every entry matching the longest prefix. Reserved and private ranges
+are removed at build time, and a prefix with host bits set is masked.
 
 `manifest.json` in a release lists both packages with their file name, size,
-sha256 of the archive, the content hash, and the record counts. A consumer that
+sha256 of the archive, the content hash, and the counts. A consumer that
 stored the content hash of what it installed can compare it against the
 manifest to know whether an update is available.
 
-The `format` package in this repository reads a package with `LoadDir` and
-checks counts and content hash against `package.json`. It is standard library
-only and meant to be copied into the consumer.
+The `format` package in this repository reads a package with `LoadDir`, checks
+the content hash against `package.json`, and decodes the entries with
+`GeoIP()` or `ASN()` while checking the counts. It is standard library only
+and meant to be copied into the consumer.
 
 ## Checks before publishing
 
 The build fails, and nothing is published, when
 
-- a package has fewer records or entries than a fixed floor,
+- a package has fewer prefixes or entries than a fixed floor,
 - more than 100 prefixes had to be dropped as invalid or reserved,
-- any record count moved more than 25% against the previous release,
+- any count moved more than 25% against the previous release,
 - an ASN directory name does not match the number inside its file.
 
 The floors and the drift limit are in `checks.go` and the `-max-drift` flag.
 
 ## Running locally
+
+```
+go test ./...
+go run . -out dist
+```
+
+Without a local Go toolchain, the same in the pinned image the phishingclub
+build uses:
 
 ```
 docker run --rm -v "$PWD:/src" -w /src -e GOFLAGS=-buildvcs=false \
@@ -124,9 +136,18 @@ Flags:
 | `-version` | UTC date and time | version string written to the manifest |
 | `-country-file`, `-asn-file` | | use local upstream archives instead of downloading |
 | `-downloads` | temp dir | keep the upstream archives here |
-| `-max-drift` | `0.25` | allowed change in record counts against the previous release |
+| `-max-drift` | `0.25` | allowed change in counts against the previous release |
 
 Output in `dist/`: `manifest.json`, `geoip.tar.gz`, `asn.tar.gz`, `summary.md`
 for the release notes, and `changed` holding `true` or `false`.
 
 From the orchestrator root `make ipdata-build` runs the same command.
+
+## License
+
+This tool is released under CC0 1.0, the same public domain dedication as the
+upstream data, so nothing here adds any restriction on top of ipverse. See the
+LICENSE file.
+
+The IP data comes from ipverse and is CC0 1.0. The published packages carry
+that source and license in their package.json.
