@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "version": "2026.09.30-1029",
+  "created": "2026-09-30T10:29:39Z",
+  "packages": {
+    "asn": {
+      "file": "asn.tar.gz",
+      "size": 4780799,
+      "sha256": "4daf9cb7b865cf9ccc0749129684ff67f0acab7b5408002fdc1acf38bb4184c5",
+      "content_hash": "8cd3ffcbef1454b3c561ae3d34df2cdf9a9c529deb2858cf8ae830d6f5ed900c",
+      "entries": 97177,
+      "ipv4_prefixes": 423218,
+      "ipv6_prefixes": 95959
+    },
+    "geoip": {
+      "file": "geoip.tar.gz",
+      "size": 858860,
+      "sha256": "cd1cf350b7dd41931270185c5434f241a65ed61ee7913be141870ef92821b31c",
+      "content_hash": "bcc3280fd866db6a3916f14f71813fd62bf800ef6250fa12d2319016d84786f3",
+      "entries": 238,
+      "ipv4_prefixes": 178650,
+      "ipv6_prefixes": 69487
+    }
+  }
+}
