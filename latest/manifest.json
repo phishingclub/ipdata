@@ -1,25 +1,25 @@
 {
   "format": 1,
-  "version": "2026.11.18-1301",
-  "created": "2026-11-18T13:02:05Z",
+  "version": "2026.11.19-1304",
+  "created": "2026-11-19T13:04:31Z",
   "packages": {
     "asn": {
       "file": "asn.tar.gz",
-      "size": 4818977,
-      "sha256": "569f9eab82e48bd82c615ce2b2562d1e1a17956559be3000f61e1bc4180a2b99",
-      "content_hash": "c184e50e4f5f93d9d76e24ebb7f83bedefd6c6794167516a188f2bec7e8d430e",
-      "entries": 97524,
-      "ipv4_prefixes": 427752,
-      "ipv6_prefixes": 98069
+      "size": 4816888,
+      "sha256": "5e767281a206a1a7f2834bd92c21e34604a5d86dc5b4926679570414440072b0",
+      "content_hash": "c88deb5fc2eeab86858a2343920601597787f612134141aff044975a1a01aab6",
+      "entries": 97535,
+      "ipv4_prefixes": 427736,
+      "ipv6_prefixes": 97380
     },
     "geoip": {
       "file": "geoip.tar.gz",
-      "size": 862745,
-      "sha256": "599d893124e87eb925fecf036dee5d285714b01a6391900e4df6293790490769",
-      "content_hash": "c92a3ade97f0c5675a99047ecb2b374f46e3c9df9444ab3050ce89e885162eff",
+      "size": 862837,
+      "sha256": "9cb25bc384153383528df710ac29e35644b825ebd639481df291e1150537aefb",
+      "content_hash": "bffb920fb5b3a7dc2098638b165044afef48ca4774eba118a14ae6bffab2d085",
       "entries": 238,
-      "ipv4_prefixes": 179340,
-      "ipv6_prefixes": 69894
+      "ipv4_prefixes": 179347,
+      "ipv6_prefixes": 69901
     }
   }
 }
